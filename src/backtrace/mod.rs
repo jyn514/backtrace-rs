@@ -1,6 +1,8 @@
 use core::ffi::c_void;
 use core::fmt;
 
+use super::ShortBacktrace;
+
 /// Inspects the current call-stack, passing all active frames into the closure
 /// provided to calculate a stack trace.
 ///
