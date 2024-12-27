@@ -418,6 +418,7 @@ impl<'a> fmt::Debug for SymbolName<'a> {
 }
 
 #[derive(Copy, Clone, Debug)]
+#[allow(missing_docs)]
 pub enum ShortBacktrace {
     ThisFrameOnly,
     Start,

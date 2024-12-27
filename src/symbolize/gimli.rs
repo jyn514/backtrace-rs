@@ -2,23 +2,21 @@
 //!
 //! This is the default symbolication implementation for Rust.
 
-use self::gimli::read::EndianSlice;
-use self::gimli::NativeEndian as Endian;
-use self::mmap::Mmap;
-use self::stash::Stash;
-use super::BytesOrWideString;
-use super::ResolveWhat;
-use super::SymbolName;
-use super::ShortBacktrace;
-use addr2line::gimli;
 use core::convert::TryInto;
-use core::mem;
-use core::u32;
+use core::{mem, u32};
+
+use addr2line::gimli;
 use libc::c_void;
 use mystd::ffi::OsString;
 use mystd::fs::File;
 use mystd::path::Path;
 use mystd::prelude::v1::*;
+
+use self::gimli::NativeEndian as Endian;
+use self::gimli::read::EndianSlice;
+use self::mmap::Mmap;
+use self::stash::Stash;
+use super::{BytesOrWideString, ResolveWhat, ShortBacktrace, SymbolName};
 
 #[cfg(backtrace_in_libstd)]
 mod mystd {
@@ -147,10 +145,8 @@ impl<'data> Context<'data> {
             package = Some(
                 gimli::DwarfPackage::load(
                     |id| -> Result<_, gimli::Error> {
-                        let data = id
-                            .dwo_name()
-                            .and_then(|name| dwp.section(stash, name))
-                            .unwrap_or(&[]);
+                        let data =
+                            id.dwo_name().and_then(|name| dwp.section(stash, name)).unwrap_or(&[]);
                         Ok(EndianSlice::new(data, Endian))
                     },
                     EndianSlice::new(&[], Endian),
@@ -159,11 +155,7 @@ impl<'data> Context<'data> {
             );
         }
 
-        Some(Context {
-            dwarf,
-            object,
-            package,
-        })
+        Some(Context { dwarf, object, package })
     }
 
     fn find_frames(
@@ -179,12 +171,16 @@ impl<'data> Context<'data> {
         &'_ self,
         stash: &'data Stash,
         probe: u64,
-    ) -> Option<UnitRef<'_, EndianSlice<'data, Endian>>> {
+    ) -> Option<gimli::UnitRef<'_, EndianSlice<'data, Endian>>> {
         let continuation = self.dwarf.find_dwarf_and_unit(probe);
         self.continuation_helper(stash, continuation)
     }
 
-    fn continuation_helper<O>(&'_ self, stash: &'data Stash, mut l: LookupResult<impl LookupContinuation<Output = O, Buf = EndianSlice<'data, Endian>>>) -> O {
+    fn continuation_helper<O>(
+        &'_ self,
+        stash: &'data Stash,
+        mut l: LookupResult<impl LookupContinuation<Output = O, Buf = EndianSlice<'data, Endian>>>,
+    ) -> O {
         loop {
             let (load, continuation) = match l {
                 LookupResult::Output(output) => break output,
@@ -195,8 +191,8 @@ impl<'data> Context<'data> {
         }
     }
 }
-    use addr2line::{LookupContinuation, LookupResult};
-    type UnitRef<'a, R> = (&'a gimli::Dwarf<R>, &'a gimli::Unit<R>);
+use addr2line::{LookupContinuation, LookupResult};
+// type UnitRef<'a, R> = (&'a gimli::Dwarf<R>, &'a gimli::Unit<R>);
 
 fn mmap(path: &Path) -> Option<Mmap> {
     let file = File::open(path).ok()?;
@@ -329,10 +325,7 @@ pub unsafe fn clear_symbol_cache() {
 
 impl Cache {
     fn new() -> Cache {
-        Cache {
-            mappings: Vec::with_capacity(MAPPINGS_CACHE_SIZE),
-            libraries: native_libraries(),
-        }
+        Cache { mappings: Vec::with_capacity(MAPPINGS_CACHE_SIZE), libraries: native_libraries() }
     }
 
     // unsafe because this is required to be externally synchronized
@@ -437,20 +430,26 @@ impl ShortBacktrace {
 
 const DW_AT_short_backtrace: gimli::DwAt = gimli::DwAt(0x3c00);
 
-fn parse_short_backtrace<'data, R: gimli::Reader<Offset = usize>>(cx: &Context<'data>, stash: &'data Stash, addr: u64, frame: &addr2line::Frame<R>) -> Option<ShortBacktrace> {
-    let (dwarf, unit) = cx.find_dwarf_and_unit(stash, addr)?;
-    let di_offset = frame.dw_die_offset?;
-    let abbrevs = unit.header.abbreviations(&dwarf.debug_abbrev).unwrap();
-    let entry = unit.header.entry(&abbrevs, di_offset).unwrap();
-    let attr = entry.attr(DW_AT_short_backtrace).unwrap();
-    if let Some(pair) = attr {
-        let parsed = ShortBacktrace::from_raw(pair.u8_value()?);
-        return Some(parsed.expect("rustc generated invalid debuginfo?"));
-    }
+fn parse_short_backtrace<'data, R: gimli::Reader<Offset = usize>>(
+    cx: &Context<'data>,
+    stash: &'data Stash,
+    addr: u64,
+    frame: &addr2line::Frame<'_, R>,
+) -> Option<ShortBacktrace> {
+    use core::ops::ControlFlow;
 
-    // TODO: this is wrong, it needs to check `DW_AT_abstract_source` to see if
-    // an inlined function has the attribute at the declaration instead.
-    None
+    let unit_ref = cx.find_dwarf_and_unit(stash, addr)?;
+    let mut short_backtrace = None;
+    unit_ref.shared_attrs(frame.dw_die_offset?, 16, |attr, _| {
+        if attr.name() == DW_AT_short_backtrace {
+            let parsed = ShortBacktrace::from_raw(attr.u8_value().ok_or(gimli::Error::UnsupportedAttributeForm)?);
+            short_backtrace = Some(parsed.expect("rustc generated invalid debuginfo?"));
+            return Ok(ControlFlow::Break(()));
+        }
+        Ok(ControlFlow::Continue(()))
+    });
+
+    short_backtrace
 }
 
 pub unsafe fn resolve(what: ResolveWhat<'_>, cb: &mut dyn FnMut(&super::Symbol)) {
