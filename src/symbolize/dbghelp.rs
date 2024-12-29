@@ -73,6 +73,11 @@ impl Symbol<'_> {
 
         self._filename_cache.as_ref().map(Path::new)
     }
+
+    pub fn short_backtrace(&self) -> Option<super::ShortBacktrace> {
+        // Not supported with dllhelp API.
+        None
+    }
 }
 
 #[repr(C, align(8))]
