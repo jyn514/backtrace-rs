@@ -431,18 +431,21 @@ impl ShortBacktrace {
 const DW_AT_short_backtrace: gimli::DwAt = gimli::DwAt(0x3c00);
 
 fn parse_short_backtrace<'data, R: gimli::Reader<Offset = usize>>(
-    cx: &Context<'data>,
+    // cx: &Context<'data>,
+    unit_ref: gimli::UnitRef<'_, R>,
     stash: &'data Stash,
     addr: u64,
     frame: &addr2line::Frame<'_, R>,
 ) -> Option<ShortBacktrace> {
     use core::ops::ControlFlow;
 
-    let unit_ref = cx.find_dwarf_and_unit(stash, addr)?;
+    // let unit_ref = cx.find_dwarf_and_unit(stash, addr)?;
     let mut short_backtrace = None;
     unit_ref.shared_attrs(frame.dw_die_offset?, 16, |attr, _| {
         if attr.name() == DW_AT_short_backtrace {
-            let parsed = ShortBacktrace::from_raw(attr.u8_value().ok_or(gimli::Error::UnsupportedAttributeForm)?);
+            let parsed = ShortBacktrace::from_raw(
+                attr.u8_value().ok_or(gimli::Error::UnsupportedAttributeForm)?,
+            );
             short_backtrace = Some(parsed.expect("rustc generated invalid debuginfo?"));
             return Ok(ControlFlow::Break(()));
         }
@@ -482,7 +485,9 @@ pub unsafe fn resolve(what: ResolveWhat<'_>, cb: &mut dyn FnMut(&super::Symbol))
                     Some(f) => Some(f.name.slice()),
                     None => cx.object.search_symtab(addr as u64),
                 };
-                let short_backtrace = parse_short_backtrace(cx, stash, addr as u64, &frame);
+                let unit_ref = cx.find_dwarf_and_unit(stash, addr as u64);
+                let short_backtrace = unit_ref
+                    .and_then(|unit| parse_short_backtrace(unit, stash, addr as u64, &frame));
                 call(Symbol::Frame {
                     addr: addr as *mut c_void,
                     location: frame.location,
@@ -493,12 +498,17 @@ pub unsafe fn resolve(what: ResolveWhat<'_>, cb: &mut dyn FnMut(&super::Symbol))
         }
         if !any_frames {
             if let Some((object_cx, object_addr)) = cx.object.search_object_map(addr as u64) {
+                // let unit_ref = cx.find_dwarf_and_unit(stash, addr as u64);
+                // let unit_ref: Option<_> = todo!();
+                let unit_ref = None;
                 if let Ok(mut frames) = object_cx.find_frames(stash, object_addr) {
                     while let Ok(Some(frame)) = frames.next() {
                         any_frames = true;
                         call(Symbol::Frame {
                             addr: addr as *mut c_void,
-                            short_backtrace: parse_short_backtrace(cx, stash, addr as u64, &frame),
+                            short_backtrace: unit_ref.and_then(|unit| {
+                                parse_short_backtrace(unit, stash, object_addr, &frame)
+                            }),
                             location: frame.location,
                             name: frame.function.map(|f| f.name.slice()),
                         });
